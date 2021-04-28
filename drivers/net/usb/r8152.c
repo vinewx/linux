@@ -4035,6 +4035,13 @@ static void r8152b_init(struct r8152 *tp)
 	ocp_data = ocp_read_word(tp, MCU_TYPE_USB, USB_USB_CTRL);
 	ocp_data &= ~(RX_AGG_DISABLE | RX_ZERO_EN);
 	ocp_write_word(tp, MCU_TYPE_USB, USB_USB_CTRL, ocp_data);
+
+	/* LED1: Act 10 +Act 100
+	 * LED0: Link 10 +Link 100
+	 */
+	ocp_data = ocp_read_byte(tp, MCU_TYPE_PLA, PLA_LEDSEL);
+	ocp_data = 0x83;
+	ocp_write_byte(tp, MCU_TYPE_PLA, PLA_LEDSEL, ocp_data);	
 }
 
 static void r8153_init(struct r8152 *tp)
@@ -4210,6 +4217,10 @@ static void r8153b_init(struct r8152 *tp)
 	rtl_tally_reset(tp);
 
 	tp->coalesce = 15000;	/* 15 us */
+
+	ocp_data = ocp_read_word(tp, MCU_TYPE_PLA, PLA_LEDSEL);
+	ocp_data = 0x78;
+	ocp_write_word(tp, MCU_TYPE_PLA, PLA_LEDSEL, ocp_data); 
 }
 
 static int rtl8152_pre_reset(struct usb_interface *intf)
@@ -5134,7 +5145,7 @@ static u8 rtl_get_version(struct usb_interface *intf)
 		break;
 	}
 
-	dev_dbg(&intf->dev, "Detected version 0x%04x\n", version);
+	dev_info(&intf->dev, "Detected version 0x%04x\n", version);
 
 	return version;
 }

@@ -40,57 +40,161 @@
  *     OTHER DEALINGS IN THE SOFTWARE.
  */
 
-/dts-v1/;
-#include "sun8i-h3.dtsi"
-#include "sunxi-common-regulators.dtsi"
-
-#include <dt-bindings/gpio/gpio.h>
+#include "sun8i-h3-nanopi.dtsi"
 
 / {
-	model = "FriendlyARM NanoPi NEO Air";
-	compatible = "friendlyarm,nanopi-neo-air", "allwinner,sun8i-h3";
+	model = "FriendlyElec NanoPi-NEO-Air";
+	compatible = "friendlyelec,nanopi-neo-air", "allwinner,sun8i-h3";
 
-	aliases {
-		serial0 = &uart0;
+	wifi_pwrseq: wifi_pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		pinctrl-names = "default";
+		pinctrl-0 = <&wifi_en_npi>;
+		reset-gpios = <&r_pio 0 7 GPIO_ACTIVE_LOW>; /* PL7 */
+		post-power-on-delay-ms = <200>;
+	};
+	rfkill_bt {
+		compatible = "rfkill-gpio";
+		pinctrl-names = "default";
+		pinctrl-0 = <&bt_pwr_pin>;
+		reset-gpios = <&pio 6 13 GPIO_ACTIVE_HIGH>; /* PG13 */
+		clocks = <&osc32k>;
+		clock-frequency = <32768>;
+		rfkill-name = "sunxi-bt";
+		rfkill-type = "bluetooth";
+	};
+	cam_xclk: cam-xclk {
+		#clock-cells = <0>;
+		compatible = "fixed-clock";
+		clock-frequency = <24000000>;
+		clock-output-names = "cam-xclk";
 	};
 
-	chosen {
-		stdout-path = "serial0:115200n8";
+	reg_cam_avdd: cam-avdd {
+		compatible = "regulator-fixed";
+		regulator-name = "cam500b-avdd";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		vin-supply = <&reg_vcc3v3>;
 	};
 
-	leds {
-		compatible = "gpio-leds";
+	reg_cam_dovdd: cam-dovdd {
+		compatible = "regulator-fixed";
+		regulator-name = "cam500b-dovdd";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&reg_vcc3v3>;
+	};
 
-		pwr {
-			label = "nanopi:green:pwr";
-			gpios = <&r_pio 0 10 GPIO_ACTIVE_HIGH>; /* PL10 */
-			default-state = "on";
-		};
-
-		status {
-			label = "nanopi:blue:status";
-			gpios = <&pio 0 10 GPIO_ACTIVE_HIGH>; /* PA10 */
-		};
+	reg_cam_dvdd: cam-dvdd {
+		compatible = "regulator-fixed";
+		regulator-name = "cam500b-dvdd";
+		regulator-min-microvolt = <1500000>;
+		regulator-max-microvolt = <1500000>;
+		vin-supply = <&reg_vcc3v3>;
 	};
 };
 
-&mmc0 {
+&pio {
+	bt_pwr_pin: bt_pwr_pin@0 {
+		pins = "PG13";
+		function = "gpio_out";
+	};
+};
+
+&r_pio {
+	wifi_en_npi: wifi_en_pin {
+		pins = "PL7";
+		function = "gpio_out";
+	};
+};
+
+&mmc1 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&mmc0_pins_a>, <&mmc0_cd_pin>;
+	pinctrl-0 = <&mmc1_pins_a>;
 	vmmc-supply = <&reg_vcc3v3>;
+	vqmmc-supply = <&reg_vcc3v3>;
+	mmc-pwrseq = <&wifi_pwrseq>;
 	bus-width = <4>;
-	cd-gpios = <&pio 5 6 GPIO_ACTIVE_HIGH>; /* PF6 */
-	cd-inverted;
+	non-removable;
 	status = "okay";
+
+	brcmf: bcrmf@1 {
+		reg = <1>;
+		compatible = "brcm,bcm4329-fmac";
+		interrupt-parent = <&pio>;
+		interrupts = <6 10 IRQ_TYPE_LEVEL_LOW>; /* PG10 / EINT10 */
+		interrupt-names = "host-wake";
+	};
 };
 
-&uart0 {
+&mmc2 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&uart0_pins_a>;
+	pinctrl-0 = <&mmc2_8bit_pins>;
+	vmmc-supply = <&reg_vcc3v3>;
+	bus-width = <8>;
+	non-removable;
+	cap-mmc-hw-reset;
 	status = "okay";
 };
 
-&usbphy {
-	/* USB VBUS is always on */
-	status = "okay";
+&mmc2_8bit_pins {
+	/* Increase drive strength for DDR modes */
+	drive-strength = <40>;
+	/* eMMC is missing pull-ups */
+	bias-pull-up;
+};
+
+&csi {
+    status = "okay";
+
+    port {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        /* Parallel bus endpoint */
+        csi_from_ov5640: endpoint {
+            remote-endpoint = <&ov5640_to_csi>;
+            bus-width = <8>;
+            data-shift = <2>;
+            hsync-active = <1>; /* Active high */
+            vsync-active = <0>; /* Active low */
+            data-active = <1>;  /* Active high */
+            pclk-sample = <1>;  /* Rising */
+        };
+    };
+};
+
+&i2c2 {
+   status = "okay";
+
+   ov5640: camera@3c {
+        compatible = "ovti,ov5640";
+        reg = <0x3c>;
+        clocks = <&cam_xclk>;
+        clock-names = "xclk";
+
+        reset-gpios = <&pio 4 14 GPIO_ACTIVE_LOW>;
+        powerdown-gpios = <&pio 4 15 GPIO_ACTIVE_HIGH>;
+        AVDD-supply = <&reg_cam_avdd>;
+        DOVDD-supply = <&reg_cam_dovdd>;
+        DVDD-supply = <&reg_cam_dvdd>;
+
+        port {
+            ov5640_to_csi: endpoint {
+                remote-endpoint = <&csi_from_ov5640>;
+                bus-width = <8>;
+                data-shift = <2>;
+                hsync-active = <1>; /* Active high */
+                vsync-active = <0>; /* Active low */
+                data-active = <1>;  /* Active high */
+                pclk-sample = <1>;  /* Rising */
+            };
+        };
+    };
+
+};
+
+&i2c2_pins {
+   bias-pull-up;
 };

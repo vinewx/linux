@@ -1846,12 +1846,10 @@ static int drm_fb_helper_single_fb_probe(struct drm_fb_helper *fb_helper,
 	}
 
 	if (crtc_count == 0 || sizes.fb_width == -1 || sizes.fb_height == -1) {
-		DRM_INFO("Cannot find any crtc or sizes\n");
-
-		/* First time: disable all crtc's.. */
-		if (!fb_helper->deferred_setup && !READ_ONCE(fb_helper->dev->master))
-			restore_fbdev_mode(fb_helper);
-		return -EAGAIN;
+		DRM_INFO("Cannot find any crtc or sizes - going 1920x1080\n");
+		
+		sizes.fb_width = sizes.surface_width = 1920;
+		sizes.fb_height = sizes.surface_height = 1080;
 	}
 
 	/* Handle our overallocation */

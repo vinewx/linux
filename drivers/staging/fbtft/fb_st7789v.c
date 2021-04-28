@@ -20,6 +20,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <video/mipi_display.h>
+#include <linux/gpio.h>
 
 #include "fbtft.h"
 

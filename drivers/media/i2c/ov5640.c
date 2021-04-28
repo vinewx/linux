@@ -27,6 +27,9 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
+#include "ov5640.h"
+
+#define OV5640_REG_SYS (1)
 
 /* min/typical/max system clock (xclk) frequencies */
 #define OV5640_XCLK_MIN  6000000
@@ -34,13 +37,19 @@
 
 #define OV5640_DEFAULT_SLAVE_ID 0x3c
 
+#define OV5640_REG_SYS_CTRL0		0x3008
 #define OV5640_REG_CHIP_ID		0x300a
+#define OV5640_REG_IO_MIPI_CTRL00	0x300e
+#define OV5640_REG_PAD_OUTPUT_ENABLE01	0x3017
+#define OV5640_REG_PAD_OUTPUT_ENABLE02	0x3018
 #define OV5640_REG_PAD_OUTPUT00		0x3019
+#define OV5640_REG_SYSTEM_CONTROL1	0x302e
 #define OV5640_REG_SC_PLL_CTRL0		0x3034
 #define OV5640_REG_SC_PLL_CTRL1		0x3035
 #define OV5640_REG_SC_PLL_CTRL2		0x3036
 #define OV5640_REG_SC_PLL_CTRL3		0x3037
 #define OV5640_REG_SLAVE_ID		0x3100
+#define OV5640_REG_SCCB_SYS_CTRL1	0x3103
 #define OV5640_REG_SYS_ROOT_DIVIDER	0x3108
 #define OV5640_REG_AWB_R_GAIN		0x3400
 #define OV5640_REG_AWB_G_GAIN		0x3402
@@ -70,8 +79,11 @@
 #define OV5640_REG_HZ5060_CTRL01	0x3c01
 #define OV5640_REG_SIGMADELTA_CTRL0C	0x3c0c
 #define OV5640_REG_FRAME_CTRL01		0x4202
+#define OV5640_REG_FORMAT_CONTROL00	0x4300
+#define OV5640_REG_POLARITY_CTRL00	0x4740
 #define OV5640_REG_MIPI_CTRL00		0x4800
 #define OV5640_REG_DEBUG_MODE		0x4814
+#define OV5640_REG_ISP_FORMAT_MUX_CTRL	0x501f
 #define OV5640_REG_PRE_ISP_TEST_SET1	0x503d
 #define OV5640_REG_SDE_CTRL0		0x5580
 #define OV5640_REG_SDE_CTRL1		0x5581
@@ -93,10 +105,16 @@ enum ov5640_mode_id {
 	OV5640_NUM_MODES,
 };
 
-enum ov5640_frame_rate {
-	OV5640_15_FPS = 0,
-	OV5640_30_FPS,
-	OV5640_NUM_FRAMERATES,
+struct ov5640_pixfmt {
+	u32 code;
+	u32 colorspace;
+};
+
+static const struct ov5640_pixfmt ov5640_formats[] = {
+	{ MEDIA_BUS_FMT_UYVY8_2X8, V4L2_COLORSPACE_SRGB, },
+	{ MEDIA_BUS_FMT_YUYV8_2X8, V4L2_COLORSPACE_SRGB, },
+	{ MEDIA_BUS_FMT_RGB565_2X8_LE, V4L2_COLORSPACE_SRGB, },
+	{ MEDIA_BUS_FMT_RGB565_2X8_BE, V4L2_COLORSPACE_SRGB, },
 };
 
 /*
@@ -111,16 +129,9 @@ MODULE_PARM_DESC(virtual_channel,
 static const int ov5640_framerates[] = {
 	[OV5640_15_FPS] = 15,
 	[OV5640_30_FPS] = 30,
+	[OV5640_7P5_FPS] = 7,
+	[OV5640_5_FPS] = 5,
 };
-
-/* regulator supplies */
-static const char * const ov5640_supply_name[] = {
-	"DOVDD", /* Digital I/O (1.8V) suppply */
-	"DVDD",  /* Digital Core (1.5V) supply */
-	"AVDD",  /* Analog (2.8V) supply */
-};
-
-#define OV5640_NUM_SUPPLIES ARRAY_SIZE(ov5640_supply_name)
 
 /*
  * Image size under 1280 * 960 are SUBSAMPLING
@@ -145,60 +156,6 @@ struct ov5640_mode_info {
 	u32 height;
 	const struct reg_value *reg_data;
 	u32 reg_data_size;
-};
-
-struct ov5640_ctrls {
-	struct v4l2_ctrl_handler handler;
-	struct {
-		struct v4l2_ctrl *auto_exp;
-		struct v4l2_ctrl *exposure;
-	};
-	struct {
-		struct v4l2_ctrl *auto_wb;
-		struct v4l2_ctrl *blue_balance;
-		struct v4l2_ctrl *red_balance;
-	};
-	struct {
-		struct v4l2_ctrl *auto_gain;
-		struct v4l2_ctrl *gain;
-	};
-	struct v4l2_ctrl *brightness;
-	struct v4l2_ctrl *saturation;
-	struct v4l2_ctrl *contrast;
-	struct v4l2_ctrl *hue;
-	struct v4l2_ctrl *test_pattern;
-};
-
-struct ov5640_dev {
-	struct i2c_client *i2c_client;
-	struct v4l2_subdev sd;
-	struct media_pad pad;
-	struct v4l2_fwnode_endpoint ep; /* the parsed DT endpoint info */
-	struct clk *xclk; /* system clock to OV5640 */
-	u32 xclk_freq;
-
-	struct regulator_bulk_data supplies[OV5640_NUM_SUPPLIES];
-	struct gpio_desc *reset_gpio;
-	struct gpio_desc *pwdn_gpio;
-
-	/* lock to protect all members below */
-	struct mutex lock;
-
-	int power_count;
-
-	struct v4l2_mbus_framefmt fmt;
-
-	const struct ov5640_mode_info *current_mode;
-	enum ov5640_frame_rate current_fr;
-	struct v4l2_fract frame_interval;
-
-	struct ov5640_ctrls ctrls;
-
-	u32 prev_sysclk, prev_hts;
-	u32 ae_low, ae_high, ae_target;
-
-	bool pending_mode_change;
-	bool streaming;
 };
 
 static inline struct ov5640_dev *to_ov5640_dev(struct v4l2_subdev *sd)
@@ -682,6 +639,42 @@ static const struct reg_value ov5640_setting_15fps_1080P_1920_1080[] = {
 	{0x4005, 0x1a, 0, 0}, {0x3008, 0x02, 0, 0}, {0x3503, 0, 0, 0},
 };
 
+static const struct reg_value ov5640_setting_7p5_fps_1080P_1920_1080[] = {
+	{0x3008, 0x42, 0, 0},
+	{0x3035, 0x21, 0, 0}, {0x3036, 0x54, 0, 0}, {0x3c07, 0x08, 0, 0},
+	{0x3c09, 0x1c, 0, 0}, {0x3c0a, 0x9c, 0, 0}, {0x3c0b, 0x40, 0, 0},
+	{0x3820, 0x40, 0, 0}, {0x3821, 0x06, 0, 0}, {0x3814, 0x11, 0, 0},
+	{0x3815, 0x11, 0, 0}, {0x3800, 0x00, 0, 0}, {0x3801, 0x00, 0, 0},
+	{0x3802, 0x00, 0, 0}, {0x3803, 0x00, 0, 0}, {0x3804, 0x0a, 0, 0},
+	{0x3805, 0x3f, 0, 0}, {0x3806, 0x07, 0, 0}, {0x3807, 0x9f, 0, 0},
+	{0x3808, 0x0a, 0, 0}, {0x3809, 0x20, 0, 0}, {0x380a, 0x07, 0, 0},
+	{0x380b, 0x98, 0, 0}, {0x380c, 0x0b, 0, 0}, {0x380d, 0x1c, 0, 0},
+	{0x380e, 0x07, 0, 0}, {0x380f, 0xb0, 0, 0}, {0x3810, 0x00, 0, 0},
+	{0x3811, 0x10, 0, 0}, {0x3812, 0x00, 0, 0}, {0x3813, 0x04, 0, 0},
+	{0x3618, 0x04, 0, 0}, {0x3612, 0x29, 0, 0}, {0x3708, 0x21, 0, 0},
+	{0x3709, 0x12, 0, 0}, {0x370c, 0x00, 0, 0}, {0x3a02, 0x03, 0, 0},
+	{0x3a03, 0xd8, 0, 0}, {0x3a08, 0x01, 0, 0}, {0x3a09, 0x27, 0, 0},
+	{0x3a0a, 0x00, 0, 0}, {0x3a0b, 0xf6, 0, 0}, {0x3a0e, 0x03, 0, 0},
+	{0x3a0d, 0x04, 0, 0}, {0x3a14, 0x03, 0, 0}, {0x3a15, 0xd8, 0, 0},
+	{0x4001, 0x02, 0, 0}, {0x4004, 0x06, 0, 0}, {0x4713, 0x03, 0, 0},
+	{0x4407, 0x04, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
+	{0x3824, 0x02, 0, 0}, {0x5001, 0x83, 0, 0}, {0x3035, 0x41, 0, 0},
+	{0x3036, 0x54, 0, 1}, {0x3c07, 0x07, 0, 0}, {0x3c08, 0x00, 0, 0},
+	{0x3c09, 0x1c, 0, 0}, {0x3c0a, 0x9c, 0, 0}, {0x3c0b, 0x40, 0, 0},
+	{0x3800, 0x01, 0, 0}, {0x3801, 0x50, 0, 0}, {0x3802, 0x01, 0, 0},
+	{0x3803, 0xb2, 0, 0}, {0x3804, 0x08, 0, 0}, {0x3805, 0xef, 0, 0},
+	{0x3806, 0x05, 0, 0}, {0x3807, 0xf1, 0, 0}, {0x3808, 0x07, 0, 0},
+	{0x3809, 0x80, 0, 0}, {0x380a, 0x04, 0, 0}, {0x380b, 0x38, 0, 0},
+	{0x380c, 0x09, 0, 0}, {0x380d, 0xc4, 0, 0}, {0x380e, 0x04, 0, 0},
+	{0x380f, 0x60, 0, 0}, {0x3612, 0x2b, 0, 0}, {0x3708, 0x64, 0, 0},
+	{0x3a02, 0x04, 0, 0}, {0x3a03, 0x60, 0, 0}, {0x3a08, 0x01, 0, 0},
+	{0x3a09, 0x50, 0, 0}, {0x3a0a, 0x01, 0, 0}, {0x3a0b, 0x18, 0, 0},
+	{0x3a0e, 0x03, 0, 0}, {0x3a0d, 0x04, 0, 0}, {0x3a14, 0x04, 0, 0},
+	{0x3a15, 0x60, 0, 0}, {0x4713, 0x02, 0, 0}, {0x4407, 0x04, 0, 0},
+	{0x460b, 0x37, 0, 0}, {0x460c, 0x20, 0, 0}, {0x3824, 0x04, 0, 0},
+	{0x4005, 0x1a, 0, 0}, {0x3008, 0x02, 0, 0}, {0x3503, 0, 0, 0},
+};
+
 static const struct reg_value ov5640_setting_15fps_QSXGA_2592_1944[] = {
 	{0x3820, 0x40, 0, 0}, {0x3821, 0x06, 0, 0},
 	{0x3035, 0x21, 0, 0}, {0x3036, 0x54, 0, 0}, {0x3c07, 0x08, 0, 0},
@@ -702,6 +695,103 @@ static const struct reg_value ov5640_setting_15fps_QSXGA_2592_1944[] = {
 	{0x4001, 0x02, 0, 0}, {0x4004, 0x06, 0, 0}, {0x4713, 0x03, 0, 0},
 	{0x4407, 0x04, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
 	{0x3824, 0x02, 0, 0}, {0x5001, 0x83, 0, 70},
+};
+
+static const struct reg_value ov5640_setting_5_fps_QSXGA_2592_1944[] = {
+	// YUV 2592x1944 5fps
+	// Input Clock = 24Mhz, PCLK = 56MHz
+	{0x3035, 0x21, 0, 0},
+	// PLL
+	{0x3036, 0x46, 0, 0},
+	// PLL
+	{0x3c07, 0x07, 0, 0},
+	// lightm eter 1 threshold[7:0]
+	{0x3820, 0x40, 0, 0},
+	// flip
+	{0x3821, 0x06, 0, 0},
+	// mirror
+	{0x3814, 0x11, 0, 0},
+	// timing X inc
+	{0x3815, 0x11, 0, 0},
+	// timing Y inc
+	{0x3800, 0x00, 0, 0},
+	// HS
+	{0x3801, 0x00, 0, 0},
+	// HS
+	{0x3802, 0x00, 0, 0},
+	// VS
+	{0x3803, 0x00, 0, 0},
+	// VS
+	{0x3804, 0x0a, 0, 0},
+	// HW {HE)
+	{0x3805, 0x3f, 0, 0},
+	// HW {HE)
+	{0x3806, 0x07, 0, 0},
+	// VH {VE)
+	{0x3807, 0x9f, 0, 0},
+	// VH {VE)
+	{0x3808, 0x0a, 0, 0},
+	// DVPHO
+	{0x3809, 0x20, 0, 0},
+	// DVPHO
+	{0x380a, 0x07, 0, 0},
+	// DVPVO
+	{0x380b, 0x98, 0, 0},
+	// DVPVO
+	{0x380c, 0x0b, 0, 0},
+	// HTS
+	{0x380d, 0x1c, 0, 0},
+	// HTS
+	{0x380e, 0x07, 0, 0},
+	// VTS
+	{0x380f, 0xb0, 0, 0},
+	// VTS
+	{0x3813, 0x04, 0, 0},
+	// timing V offset
+	{0x3618, 0x04, 0, 0},
+	{0x3612, 0x2b, 0, 0},
+	{0x3709, 0x12, 0, 0},
+	{0x370c, 0x00, 0, 0},
+	// banding filters are calculated automatically in camera driver
+	//{0x3a02, 0x07, 0, 0},
+	// 60Hz max exposure
+	//{0x3a03, 0xae, 0, 0},
+	// 60Hz max exposure
+	//{0x3a08, 0x01, 0, 0},
+	// B50 step
+	//{0x3a09, 0x27, 0, 0},
+	// B50 step
+	//{0x3a0a, 0x00, 0, 0},
+	// B60 step
+	//{0x3a0b, 0xf6, 0, 0},
+	// B60 step
+	//{0x3a0e, 0x06, 0, 0},
+	// 50Hz max band
+	//{0x3a0d, 0x08, 0, 0},
+	// 60Hz max band
+	//{0x3a14, 0x07, 0, 0},
+	// 50Hz max exposure
+	//{0x3a15, 0xae, 0, 0},
+	// 50Hz max exposure
+	{0x4004, 0x06, 0, 0},
+	// BLC line number
+	{0x3002, 0x1c, 0, 0},
+	// reset JFIFO, SFIFO, JPG
+	{0x3006, 0xc3, 0, 0},
+	// disable clock of JPEG2x, JPEG
+	{0x4713, 0x02, 0, 0},
+	// JPEG mode 3
+	{0x4407, 0x0c, 0, 0},
+	// Quantization sacle
+	{0x460b, 0x37, 0, 0},
+	{0x460c, 0x20, 0, 0},
+	{0x4837, 0x2c, 0, 0},
+	// MIPI global timing
+	{0x3824, 0x01, 0, 0},
+	// PCLK manual divider
+	{0x5001, 0x83, 0, 0},
+	// SDE on, CMX on, AWB on
+	{0x3503, 0x03, 0, 0},
 };
 
 /* power-on sensor init reg table */
@@ -766,6 +856,14 @@ ov5640_mode_data[OV5640_NUM_FRAMERATES][OV5640_NUM_MODES] = {
 		 ov5640_setting_30fps_1080P_1920_1080,
 		 ARRAY_SIZE(ov5640_setting_30fps_1080P_1920_1080)},
 		{OV5640_MODE_QSXGA_2592_1944, -1, 0, 0, NULL, 0},
+	}, {
+		{OV5640_MODE_1080P_1920_1080, SCALING, 1920, 1080,
+		 ov5640_setting_7p5_fps_1080P_1920_1080,
+		 ARRAY_SIZE(ov5640_setting_7p5_fps_1080P_1920_1080)}
+	}, {
+		{OV5640_MODE_1080P_1920_1080, SCALING, 2592, 1944,
+			 ov5640_setting_5_fps_QSXGA_2592_1944,
+			 ARRAY_SIZE(ov5640_setting_5_fps_QSXGA_2592_1944)}
 	},
 };
 
@@ -982,7 +1080,115 @@ static int ov5640_get_gain(struct ov5640_dev *sensor)
 	return gain & 0x3ff;
 }
 
-static int ov5640_set_stream(struct ov5640_dev *sensor, bool on)
+static int ov5640_set_stream_dvp(struct ov5640_dev *sensor, bool on)
+{
+	int ret;
+	unsigned int flags = sensor->ep.bus.parallel.flags;
+	u8 pclk_pol = 0;
+	u8 hsync_pol = 0;
+	u8 vsync_pol = 0;
+
+	/*
+	 * Note about parallel port configuration.
+	 *
+	 * When configured in parallel mode, the OV5640 will
+	 * output 10 bits data on DVP data lines [9:0].
+	 * If only 8 bits data are wanted, the 8 bits data lines
+	 * of the camera interface must be physically connected
+	 * on the DVP data lines [9:2].
+	 *
+	 * Control lines polarity can be configured through
+	 * devicetree endpoint control lines properties.
+	 * If no endpoint control lines properties are set,
+	 * polarity will be as below:
+	 * - VSYNC:	active high
+	 * - HREF:	active low
+	 * - PCLK:	active low
+	 */
+
+	if (on) {
+		/*
+		 * reset MIPI PCLK/SERCLK divider
+		 *
+		 * SC PLL CONTRL1 0
+		 * - [3..0]:	MIPI PCLK/SERCLK divider
+		 */
+		ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL1, 0x0f, 0);
+		if (ret)
+			return ret;
+
+		/*
+		 * configure parallel port control lines polarity
+		 *
+		 * POLARITY CTRL0
+		 * - [5]:	PCLK polarity (0: active low, 1: active high)
+		 * - [1]:	HREF polarity (0: active low, 1: active high)
+		 * - [0]:	VSYNC polarity (mismatch here between
+		 *		datasheet and hardware, 0 is active high
+		 *		and 1 is active low...)
+		 */
+		if (flags & V4L2_MBUS_PCLK_SAMPLE_RISING)
+			pclk_pol = 1;
+		if (flags & V4L2_MBUS_HSYNC_ACTIVE_HIGH)
+			hsync_pol = 1;
+		if (flags & V4L2_MBUS_VSYNC_ACTIVE_LOW)
+			vsync_pol = 1;
+
+		ret = ov5640_write_reg(sensor,
+				       OV5640_REG_POLARITY_CTRL00,
+				       (pclk_pol << 5) |
+				       (hsync_pol << 1) |
+				       vsync_pol);
+
+		ret = ov5640_af_setting(sensor);
+		msleep(100);
+		ret = ov5640_af_continuous(sensor);
+
+		if (ret)
+			return ret;
+	}
+
+	/*
+	 * powerdown MIPI TX/RX PHY & disable MIPI
+	 *
+	 * MIPI CONTROL 00
+	 * 4:	 PWDN PHY TX
+	 * 3:	 PWDN PHY RX
+	 * 2:	 MIPI enable
+	 */
+	ret = ov5640_write_reg(sensor,
+			       OV5640_REG_IO_MIPI_CTRL00, on ? 0x18 : 0);
+	if (ret)
+		return ret;
+
+	/*
+	 * enable VSYNC/HREF/PCLK DVP control lines
+	 * & D[9:6] DVP data lines
+	 *
+	 * PAD OUTPUT ENABLE 01
+	 * - 6:		VSYNC output enable
+	 * - 5:		HREF output enable
+	 * - 4:		PCLK output enable
+	 * - [3:0]:	D[9:6] output enable
+	 */
+	ret = ov5640_write_reg(sensor,
+			       OV5640_REG_PAD_OUTPUT_ENABLE01,
+			       on ? 0x7f : 0);
+	if (ret)
+		return ret;
+
+	/*
+	 * enable D[5:0] DVP data lines
+	 *
+	 * PAD OUTPUT ENABLE 02
+	 * - [7:2]:	D[5:0] output enable
+	 */
+	return ov5640_write_reg(sensor,
+				OV5640_REG_PAD_OUTPUT_ENABLE02,
+				on ? 0xfc : 0);
+}
+
+static int ov5640_set_stream_mipi(struct ov5640_dev *sensor, bool on)
 {
 	int ret;
 
@@ -1251,6 +1457,12 @@ ov5640_find_mode(struct ov5640_dev *sensor, enum ov5640_frame_rate fr,
 	const struct ov5640_mode_info *mode = NULL;
 	int i;
 
+	if (width >= 2592 && height >= 1944)
+		fr = OV5640_5_FPS;
+	else if (width >= 1920 && height >= 1080)
+		fr = OV5640_7P5_FPS;
+	else
+		fr = OV5640_30_FPS;
 	for (i = OV5640_NUM_MODES - 1; i >= 0; i--) {
 		mode = &ov5640_mode_data[fr][i];
 
@@ -1524,7 +1736,7 @@ static int ov5640_restore_mode(struct ov5640_dev *sensor)
 
 static void ov5640_power(struct ov5640_dev *sensor, bool enable)
 {
-	gpiod_set_value(sensor->pwdn_gpio, enable ? 0 : 1);
+	gpiod_set_value_cansleep(sensor->pwdn_gpio, enable ? 0 : 1);
 }
 
 static void ov5640_reset(struct ov5640_dev *sensor)
@@ -1532,7 +1744,7 @@ static void ov5640_reset(struct ov5640_dev *sensor)
 	if (!sensor->reset_gpio)
 		return;
 
-	gpiod_set_value(sensor->reset_gpio, 0);
+	gpiod_set_value_cansleep(sensor->reset_gpio, 0);
 
 	/* camera power cycle */
 	ov5640_power(sensor, false);
@@ -1540,11 +1752,55 @@ static void ov5640_reset(struct ov5640_dev *sensor)
 	ov5640_power(sensor, true);
 	usleep_range(5000, 10000);
 
-	gpiod_set_value(sensor->reset_gpio, 1);
+	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
 	usleep_range(1000, 2000);
 
-	gpiod_set_value(sensor->reset_gpio, 0);
+	gpiod_set_value_cansleep(sensor->reset_gpio, 0);
 	usleep_range(5000, 10000);
+}
+
+static int ov5640_set_power_on(struct ov5640_dev *sensor)
+{
+	struct i2c_client *client = sensor->i2c_client;
+	int ret;
+
+	ret = clk_prepare_enable(sensor->xclk);
+	if (ret) {
+		dev_err(&client->dev, "%s: failed to enable clock\n",
+			__func__);
+		return ret;
+	}
+
+	ret = regulator_bulk_enable(OV5640_NUM_SUPPLIES,
+				    sensor->supplies);
+	if (ret) {
+		dev_err(&client->dev, "%s: failed to enable regulators\n",
+			__func__);
+		goto xclk_off;
+	}
+
+	ov5640_reset(sensor);
+	ov5640_power(sensor, true);
+
+	ret = ov5640_init_slave_id(sensor);
+	if (ret)
+		goto power_off;
+
+	return 0;
+
+power_off:
+	ov5640_power(sensor, false);
+	regulator_bulk_disable(OV5640_NUM_SUPPLIES, sensor->supplies);
+xclk_off:
+	clk_disable_unprepare(sensor->xclk);
+	return ret;
+}
+
+static void ov5640_set_power_off(struct ov5640_dev *sensor)
+{
+	ov5640_power(sensor, false);
+	regulator_bulk_disable(OV5640_NUM_SUPPLIES, sensor->supplies);
+	clk_disable_unprepare(sensor->xclk);
 }
 
 static int ov5640_set_power(struct ov5640_dev *sensor, bool on)
@@ -1552,44 +1808,33 @@ static int ov5640_set_power(struct ov5640_dev *sensor, bool on)
 	int ret = 0;
 
 	if (on) {
-		clk_prepare_enable(sensor->xclk);
-
-		ret = regulator_bulk_enable(OV5640_NUM_SUPPLIES,
-					    sensor->supplies);
+		ret = ov5640_set_power_on(sensor);
 		if (ret)
-			goto xclk_off;
-
-		ov5640_reset(sensor);
-		ov5640_power(sensor, true);
-
-		ret = ov5640_init_slave_id(sensor);
-		if (ret)
-			goto power_off;
+			return ret;
 
 		ret = ov5640_restore_mode(sensor);
 		if (ret)
 			goto power_off;
 
-		/*
-		 * start streaming briefly followed by stream off in
-		 * order to coax the clock lane into LP-11 state.
-		 */
-		ret = ov5640_set_stream(sensor, true);
-		if (ret)
-			goto power_off;
-		usleep_range(1000, 2000);
-		ret = ov5640_set_stream(sensor, false);
-		if (ret)
-			goto power_off;
+		if (sensor->ep.bus_type == V4L2_MBUS_CSI2) {
+			/*
+			 * start streaming briefly followed by stream off in
+			 * order to coax the clock lane into LP-11 state.
+			 */
+			ret = ov5640_set_stream_mipi(sensor, true);
+			if (ret)
+				goto power_off;
+			usleep_range(1000, 2000);
+			ret = ov5640_set_stream_mipi(sensor, false);
+			if (ret)
+				goto power_off;
+		}
 
 		return 0;
 	}
 
 power_off:
-	ov5640_power(sensor, false);
-	regulator_bulk_disable(OV5640_NUM_SUPPLIES, sensor->supplies);
-xclk_off:
-	clk_disable_unprepare(sensor->xclk);
+	ov5640_set_power_off(sensor);
 	return ret;
 }
 
@@ -1693,17 +1938,23 @@ static int ov5640_try_fmt_internal(struct v4l2_subdev *sd,
 {
 	struct ov5640_dev *sensor = to_ov5640_dev(sd);
 	const struct ov5640_mode_info *mode;
+	int i;
 
 	mode = ov5640_find_mode(sensor, fr, fmt->width, fmt->height, true);
 	if (!mode)
 		return -EINVAL;
-
 	fmt->width = mode->width;
 	fmt->height = mode->height;
-	fmt->code = sensor->fmt.code;
 
 	if (new_mode)
 		*new_mode = mode;
+
+	for (i = 0; i < ARRAY_SIZE(ov5640_formats); i++)
+		if (ov5640_formats[i].code == fmt->code)
+			break;
+	if (i >= ARRAY_SIZE(ov5640_formats))
+		fmt->code = ov5640_formats[0].code;
+
 	return 0;
 }
 
@@ -1746,6 +1997,45 @@ out:
 	return ret;
 }
 
+static int ov5640_set_framefmt(struct ov5640_dev *sensor,
+			       struct v4l2_mbus_framefmt *format)
+{
+	int ret = 0;
+	bool is_rgb = false;
+	u8 val;
+
+	switch (format->code) {
+	case MEDIA_BUS_FMT_UYVY8_2X8:
+		/* YUV422, UYVY */
+		val = 0x3f;
+		break;
+	case MEDIA_BUS_FMT_YUYV8_2X8:
+		/* YUV422, YUYV */
+		val = 0x30;
+		break;
+	case MEDIA_BUS_FMT_RGB565_2X8_LE:
+		/* RGB565 {g[2:0],b[4:0]},{r[4:0],g[5:3]} */
+		val = 0x6F;
+		is_rgb = true;
+		break;
+	case MEDIA_BUS_FMT_RGB565_2X8_BE:
+		/* RGB565 {r[4:0],g[5:3]},{g[2:0],b[4:0]} */
+		val = 0x61;
+		is_rgb = true;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	/* FORMAT CONTROL00: YUV and RGB formatting */
+	ret = ov5640_write_reg(sensor, OV5640_REG_FORMAT_CONTROL00, val);
+	if (ret)
+		return ret;
+
+	/* FORMAT MUX CONTROL: ISP YUV or RGB */
+	return ov5640_write_reg(sensor, OV5640_REG_ISP_FORMAT_MUX_CTRL,
+				is_rgb ? 0x01 : 0x00);
+}
 
 /*
  * Sensor Controls.
@@ -1854,6 +2144,7 @@ static int ov5640_set_ctrl_exposure(struct ov5640_dev *sensor, int exp)
 		if (ret < 0)
 			return ret;
 		max_exp += ret;
+		ret = 0;
 
 		if (ctrls->exposure->val < max_exp)
 			ret = ov5640_set_exposure(sensor, ctrls->exposure->val);
@@ -2131,15 +2422,12 @@ static int ov5640_enum_mbus_code(struct v4l2_subdev *sd,
 				  struct v4l2_subdev_pad_config *cfg,
 				  struct v4l2_subdev_mbus_code_enum *code)
 {
-	struct ov5640_dev *sensor = to_ov5640_dev(sd);
-
 	if (code->pad != 0)
 		return -EINVAL;
-	if (code->index != 0)
+	if (code->index >= ARRAY_SIZE(ov5640_formats))
 		return -EINVAL;
 
-	code->code = sensor->fmt.code;
-
+	code->code = ov5640_formats[code->index].code;
 	return 0;
 }
 
@@ -2155,9 +2443,17 @@ static int ov5640_s_stream(struct v4l2_subdev *sd, int enable)
 			ret = ov5640_set_mode(sensor, sensor->current_mode);
 			if (ret)
 				goto out;
+
+			ret = ov5640_set_framefmt(sensor, &sensor->fmt);
+			if (ret)
+				goto out;
 		}
 
-		ret = ov5640_set_stream(sensor, enable);
+		if (sensor->ep.bus_type == V4L2_MBUS_CSI2)
+			ret = ov5640_set_stream_mipi(sensor, enable);
+		else
+			ret = ov5640_set_stream_dvp(sensor, enable);
+
 		if (!ret)
 			sensor->streaming = enable;
 	}
@@ -2202,6 +2498,68 @@ static int ov5640_get_regulators(struct ov5640_dev *sensor)
 				       sensor->supplies);
 }
 
+static int ov5640_check_chip_id(struct ov5640_dev *sensor)
+{
+	struct i2c_client *client = sensor->i2c_client;
+	int ret = 0;
+	u16 chip_id;
+
+	ret = ov5640_set_power_on(sensor);
+	if (ret)
+		return ret;
+
+	ret = ov5640_read_reg16(sensor, OV5640_REG_CHIP_ID, &chip_id);
+	if (ret) {
+		dev_err(&client->dev, "%s: failed to read chip identifier\n",
+			__func__);
+		goto power_off;
+	}
+
+	if (chip_id != 0x5640) {
+		dev_err(&client->dev, "%s: wrong chip identifier, expected 0x5640, got 0x%x\n",
+			__func__, chip_id);
+		ret = -ENXIO;
+	}
+
+power_off:
+	ov5640_set_power_off(sensor);
+	return ret;
+}
+
+#ifdef OV5640_REG_SYS
+static struct ov5640_dev * g_dev;
+static int sys_cur_reg = 0;
+
+static ssize_t ov5640_reg_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	int tmp, value;
+
+	value = 0;
+	tmp = simple_strtoul(buf, NULL, 16);
+	if (tmp < 0xffff) {  			 // reg(0xFFFF)
+		sys_cur_reg = tmp;
+	}	
+	else {							 // reg-value(0xFFFF-0XFFFF)
+		value = tmp & 0x0000FFFF;
+		sys_cur_reg= (tmp >> 16) & 0xFFFF;
+		ov5640_write_reg(g_dev, sys_cur_reg, value);
+	}
+	return count;
+}
+
+static ssize_t ov5640_reg_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	unsigned char value;
+	value = 0;
+	ov5640_read_reg(g_dev, sys_cur_reg, &value);
+	return sprintf(buf, "reg[0x%x]=%x\n", sys_cur_reg, value);
+}
+
+static struct device *ov5640_reg_dev;
+static struct class *ov5640_reg_class;
+static DEVICE_ATTR(ov5640_reg, S_IWUSR | S_IRUGO, ov5640_reg_show, ov5640_reg_store);
+#endif
+
 static int ov5640_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
@@ -2242,11 +2600,6 @@ static int ov5640_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	if (sensor->ep.bus_type != V4L2_MBUS_CSI2) {
-		dev_err(dev, "invalid bus type, must be MIPI CSI2\n");
-		return -EINVAL;
-	}
-
 	/* get system clock (xclk) */
 	sensor->xclk = devm_clk_get(dev, "xclk");
 	if (IS_ERR(sensor->xclk)) {
@@ -2271,7 +2624,7 @@ static int ov5640_probe(struct i2c_client *client,
 
 	v4l2_i2c_subdev_init(&sensor->sd, client, &ov5640_subdev_ops);
 
-	sensor->sd.flags = V4L2_SUBDEV_FL_HAS_DEVNODE;
+	sensor->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	sensor->pad.flags = MEDIA_PAD_FL_SOURCE;
 	sensor->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
 	ret = media_entity_pads_init(&sensor->sd.entity, 1, &sensor->pad);
@@ -2284,6 +2637,10 @@ static int ov5640_probe(struct i2c_client *client,
 
 	mutex_init(&sensor->lock);
 
+	ret = ov5640_check_chip_id(sensor);
+	if (ret)
+		goto entity_cleanup;
+
 	ret = ov5640_init_controls(sensor);
 	if (ret)
 		goto entity_cleanup;
@@ -2291,6 +2648,23 @@ static int ov5640_probe(struct i2c_client *client,
 	ret = v4l2_async_register_subdev(&sensor->sd);
 	if (ret)
 		goto free_ctrls;
+
+#ifdef OV5640_REG_SYS
+	g_dev = sensor;
+
+	ov5640_reg_class = class_create(THIS_MODULE, "ov5640");
+	if (IS_ERR(ov5640_reg_class)) {
+		dev_info(dev,"[%s] failed to class_create ov5640\n", __func__);
+		ret = -1;
+		goto free_ctrls;
+	}
+	ov5640_reg_dev = device_create(ov5640_reg_class, NULL, MKDEV(0, 1), NULL, "dev");
+	ret = device_create_file(ov5640_reg_dev, &dev_attr_ov5640_reg);
+	if (ret < 0) {
+		dev_info(dev,"[%s] failed to device_create_file ov5640\n", __func__);
+		goto free_ctrls;
+	}
+#endif
 
 	return 0;
 
@@ -2306,6 +2680,12 @@ static int ov5640_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov5640_dev *sensor = to_ov5640_dev(sd);
+
+#ifdef OV5640_REG_SYS
+	device_remove_file(ov5640_reg_dev, &dev_attr_ov5640_reg);
+	device_destroy(ov5640_reg_class, MKDEV(0, 1));
+	class_destroy(ov5640_reg_class);
+#endif
 
 	v4l2_async_unregister_subdev(&sensor->sd);
 	mutex_destroy(&sensor->lock);

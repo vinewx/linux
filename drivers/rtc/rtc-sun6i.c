@@ -74,7 +74,7 @@
 #define SUN6I_ALARM_CONFIG_WAKEUP		BIT(0)
 
 #define SUN6I_LOSC_OUT_GATING			0x0060
-#define SUN6I_LOSC_OUT_GATING_EN_OFFSET		0
+#define SUN6I_LOSC_OUT_GATING_EN		BIT(0)
 
 /*
  * Get date values
@@ -216,6 +216,9 @@ static void __init sun6i_rtc_clk_init(struct device_node *node)
 	writel(SUN6I_LOSC_CTRL_KEY | SUN6I_LOSC_CTRL_EXT_OSC,
 	       rtc->base + SUN6I_LOSC_CTRL);
 
+	writel(SUN6I_LOSC_OUT_GATING_EN,
+			   rtc->base + SUN6I_LOSC_OUT_GATING);
+
 	/* Yes, I know, this is ugly. */
 	sun6i_rtc = rtc;
 
@@ -253,7 +256,7 @@ static void __init sun6i_rtc_clk_init(struct device_node *node)
 				      &clkout_name);
 	rtc->ext_losc = clk_register_gate(NULL, clkout_name, rtc->hw.init->name,
 					  0, rtc->base + SUN6I_LOSC_OUT_GATING,
-					  SUN6I_LOSC_OUT_GATING_EN_OFFSET, 0,
+					  SUN6I_LOSC_OUT_GATING_EN, 0,
 					  &rtc->lock);
 	if (IS_ERR(rtc->ext_losc)) {
 		pr_crit("Couldn't register the LOSC external gate\n");

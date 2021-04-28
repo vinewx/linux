@@ -9,6 +9,12 @@ menuconfig FB_TFT
 	select FB_DEFERRED_IO
 	select FB_BACKLIGHT
 
+config FB_TFT_SYS
+	tristate "Support sysfs for small TFT LCD display modules"
+	depends on FB_TFT
+	help
+	  Sysfs support for Support sysfs for small TFT LCD display modules
+
 config FB_TFT_AGM1264K_FL
 	tristate "FB driver for the AGM1264K-FL LCD display"
 	depends on FB_TFT
@@ -166,6 +172,16 @@ config FB_TFT_ST7789V
 	  This enables generic framebuffer support for the Sitronix ST7789V
 	  display controller. The controller is intended for small color
 	  displays with a resolution of up to 320x240 pixels.
+
+	  Say Y if you have such a display that utilizes this controller.
+
+config FB_TFT_ST7789VW
+	tristate "FB driver for the ST7789VW LCD Controller"
+	depends on FB_TFT
+	help
+	  This enables generic framebuffer support for the Sitronix ST7789VW
+	  display controller. The controller is intended for small color
+	  displays with a resolution of up to 240x240 pixels.
 
 	  Say Y if you have such a display that utilizes this controller.
 
